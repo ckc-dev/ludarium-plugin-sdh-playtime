@@ -84,6 +84,7 @@ class SDHPlaytimeAdapter(GameTrackerAdapter):
         self._sync_overall_time(cursor)
         conn.commit()
         conn.close()
+        self.report(f"Session added to '{self.display_name}' ({self.type})")
 
     def update_session(self, game_id, duration, new_start, old_start):
         conn = self._get_conn()
