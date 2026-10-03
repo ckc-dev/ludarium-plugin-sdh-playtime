@@ -1,3 +1,4 @@
+
 import sqlite3
 from datetime import datetime, timedelta
 
@@ -94,6 +95,21 @@ class SDHPlaytimeAdapter(GameTrackerAdapter):
         self._sync_overall_time(cursor)
         conn.commit()
         conn.close()
+
+    supports_session_parts = False
+
+    def get_session_parts(self, game_id, original_date_time):
+        return []
+
+    def update_session_part(self, part_id, duration, new_start, old_start):
+        pass
+
+    def add_session_part(self, game_id, start_time, duration):
+        pass
+
+    def delete_session_part(self, part_id):
+        pass
+
 
     def delete_session(self, original_date_time):
         conn = self._get_conn()
