@@ -5,6 +5,19 @@ from datetime import datetime, timedelta
 from database import GameTrackerAdapter, _attach_icon
 
 
+def _parse_dt(value):
+    """Tolerant timestamp parse.
+
+    Steam Playtime writes microseconds, but imported rows and host-padded
+    values can arrive as a bare '%Y-%m-%dT%H:%M:%S'. The previous inline
+    strptime assumed the microsecond form and its exact 'T' separator.
+    """
+    from database import parse_session_datetime
+    parsed = parse_session_datetime(value)
+    return parsed if parsed is not None else datetime.strptime(
+        value.split('.')[0], "%Y-%m-%dT%H:%M:%S")
+
+
 class SDHPlaytimeAdapter(GameTrackerAdapter):
     def __init__(self, source_id, display_name, db_path="storage.db", default_user_id=1):
         self.source_id = source_id
@@ -13,10 +26,39 @@ class SDHPlaytimeAdapter(GameTrackerAdapter):
         self.default_user_id = default_user_id
         self.type = 'sdh_playtime'
 
+    # play_time has no PRIMARY KEY and is NOT WITHOUT ROWID, so SQLite already
+    # gives every row a unique, stable implicit rowid. We expose that as
+    # session_id instead of adding a column: rewriting the table would collide
+    # with the owning Steam Playtime app, which tracks its own migrations.
+    supports_session_ids = True
+
     def _get_conn(self):
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _session_id(self, original_date_time):
+        """Resolves a date_time to a rowid for hosts that predate session ids.
+
+        Lowest rowid wins, matching the single-row behaviour the session_id
+        path gives us, so a duplicate date_time can no longer make one
+        user action rewrite or delete several rows.
+        """
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT rowid FROM play_time WHERE date_time = ? ORDER BY rowid LIMIT 1",
+                (original_date_time,)).fetchone()
+        finally:
+            conn.close()
+        return row['rowid'] if row else None
+
+    @staticmethod
+    def _target(session_id, original_date_time):
+        """Returns (sql_fragment, params) addressing exactly one session row."""
+        if session_id is not None:
+            return "rowid = ?", (session_id,)
+        return "date_time = ?", (original_date_time,)
 
     def _sync_overall_time(self, cursor):
         cursor.execute(
@@ -38,7 +80,7 @@ class SDHPlaytimeAdapter(GameTrackerAdapter):
         """).fetchall()
 
         sessions_raw = conn.execute("""
-            SELECT p.date_time, p.duration, p.game_id, g.name
+            SELECT p.rowid AS session_id, p.date_time, p.duration, p.game_id, g.name
             FROM play_time p LEFT JOIN game_dict g ON p.game_id = g.game_id
         """).fetchall()
         conn.close()
@@ -48,8 +90,7 @@ class SDHPlaytimeAdapter(GameTrackerAdapter):
         sessions = []
         for r in sessions_raw:
             s = dict(r, icon_url=_attach_icon(r['game_id']))
-            start_dt = datetime.strptime(str(s['date_time']).split('.')[
-                                         0], "%Y-%m-%dT%H:%M:%S")
+            start_dt = _parse_dt(str(s['date_time']))
             s['start_dt'], s['end_dt'], s['has_overlap'] = start_dt, start_dt + \
                 timedelta(seconds=float(s['duration'])), False
             sessions.append(s)
@@ -87,11 +128,17 @@ class SDHPlaytimeAdapter(GameTrackerAdapter):
         conn.close()
         self.report(f"Session added to '{self.display_name}' ({self.type})")
 
-    def update_session(self, game_id, duration, new_start, old_start):
+    def update_session(self, game_id, duration, new_start, old_start, session_id=None):
+        if session_id is None:
+            session_id = self._session_id(old_start)
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute("UPDATE play_time SET game_id = ?, duration = ?, date_time = ? WHERE date_time = ?",
-                       (game_id, duration, new_start, old_start))
+        if session_id is not None:
+            cursor.execute("UPDATE play_time SET game_id = ?, duration = ?, date_time = ? WHERE rowid = ?",
+                           (game_id, duration, new_start, session_id))
+        else:
+            cursor.execute("UPDATE play_time SET game_id = ?, duration = ?, date_time = ? WHERE date_time = ?",
+                           (game_id, duration, new_start, old_start))
         self._sync_overall_time(cursor)
         conn.commit()
         conn.close()
@@ -111,11 +158,16 @@ class SDHPlaytimeAdapter(GameTrackerAdapter):
         pass
 
 
-    def delete_session(self, original_date_time):
+    def delete_session(self, original_date_time, session_id=None):
+        if session_id is None:
+            session_id = self._session_id(original_date_time)
         conn = self._get_conn()
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM play_time WHERE date_time = ?",
-                       (original_date_time,))
+        if session_id is not None:
+            cursor.execute("DELETE FROM play_time WHERE rowid = ?", (session_id,))
+        else:
+            cursor.execute("DELETE FROM play_time WHERE date_time = ?",
+                           (original_date_time,))
         self._sync_overall_time(cursor)
         conn.commit()
         conn.close()
@@ -130,18 +182,30 @@ class SDHPlaytimeAdapter(GameTrackerAdapter):
     def get_round_candidates(self):
         conn = self._get_conn()
         raw = conn.execute("""
-            SELECT p.date_time, p.duration, g.name, g.game_id FROM play_time p
+            SELECT p.rowid AS session_id, p.date_time, p.duration, g.name, g.game_id FROM play_time p
             JOIN game_dict g ON p.game_id = g.game_id WHERE p.duration != ROUND(p.duration) ORDER BY p.date_time DESC
         """).fetchall()
         conn.close()
-        return [{'date_time': r['date_time'], 'name': r['name'], 'old_duration': r['duration'], 'new_duration': round(r['duration']), 'icon_url': _attach_icon(r['game_id'])} for r in raw]
+        return [{'session_id': r['session_id'], 'date_time': r['date_time'], 'name': r['name'], 'old_duration': r['duration'], 'new_duration': round(r['duration']), 'icon_url': _attach_icon(r['game_id'])} for r in raw]
 
     def apply_rounding(self, dates_list):
         conn = self._get_conn()
         cursor = conn.cursor()
         for dt in dates_list:
-            cursor.execute(
-                "UPDATE play_time SET duration = ROUND(duration) WHERE date_time = ?", (dt,))
+            if isinstance(dt, (tuple, list)):
+                dt, session_id = dt
+            else:
+                session_id = None
+            if session_id is None:
+                row = cursor.execute(
+                    "SELECT rowid FROM play_time WHERE date_time = ? ORDER BY rowid LIMIT 1", (dt,)).fetchone()
+                session_id = row['rowid'] if row else None
+            if session_id is not None:
+                cursor.execute(
+                    "UPDATE play_time SET duration = ROUND(duration) WHERE rowid = ?", (session_id,))
+            else:
+                cursor.execute(
+                    "UPDATE play_time SET duration = ROUND(duration) WHERE date_time = ?", (dt,))
         self._sync_overall_time(cursor)
         conn.commit()
         conn.close()
@@ -149,17 +213,28 @@ class SDHPlaytimeAdapter(GameTrackerAdapter):
     def get_cleanup_candidates(self, threshold_seconds):
         conn = self._get_conn()
         raw = conn.execute("""
-            SELECT p.date_time, p.duration, g.name, g.game_id FROM play_time p
+            SELECT p.rowid AS session_id, p.date_time, p.duration, g.name, g.game_id FROM play_time p
             JOIN game_dict g ON p.game_id = g.game_id WHERE p.duration < ? ORDER BY p.date_time DESC
         """, (threshold_seconds,)).fetchall()
         conn.close()
-        return [{'date_time': r['date_time'], 'duration': r['duration'], 'name': r['name'], 'icon_url': _attach_icon(r['game_id'])} for r in raw]
+        return [{'session_id': r['session_id'], 'date_time': r['date_time'], 'duration': r['duration'], 'name': r['name'], 'icon_url': _attach_icon(r['game_id'])} for r in raw]
 
     def apply_cleanup(self, dates_list):
         conn = self._get_conn()
         cursor = conn.cursor()
         for dt in dates_list:
-            cursor.execute("DELETE FROM play_time WHERE date_time = ?", (dt,))
+            if isinstance(dt, (tuple, list)):
+                dt, session_id = dt
+            else:
+                session_id = None
+            if session_id is None:
+                row = cursor.execute(
+                    "SELECT rowid FROM play_time WHERE date_time = ? ORDER BY rowid LIMIT 1", (dt,)).fetchone()
+                session_id = row['rowid'] if row else None
+            if session_id is not None:
+                cursor.execute("DELETE FROM play_time WHERE rowid = ?", (session_id,))
+            else:
+                cursor.execute("DELETE FROM play_time WHERE date_time = ?", (dt,))
         self._sync_overall_time(cursor)
         conn.commit()
         conn.close()
@@ -167,7 +242,7 @@ class SDHPlaytimeAdapter(GameTrackerAdapter):
     def get_sessions_chronological(self):
         conn = self._get_conn()
         raw = conn.execute("""
-            SELECT p.date_time, p.duration, p.game_id, g.name FROM play_time p
+            SELECT p.rowid AS session_id, p.date_time, p.duration, p.game_id, g.name FROM play_time p
             JOIN game_dict g ON p.game_id = g.game_id ORDER BY p.game_id, p.date_time ASC
         """).fetchall()
         conn.close()
@@ -177,12 +252,38 @@ class SDHPlaytimeAdapter(GameTrackerAdapter):
         conn = self._get_conn()
         cursor = conn.cursor()
         for p in merges_list:
+            # Payload fields: primary_date_time|new_duration|doomed_csv[|primary_id][|doomed_ids_csv]
+            # The trailing id fields are optional, so a payload built by an
+            # older host still parses and falls back to date_time matching.
             parts = p.split('|')
-            cursor.execute("UPDATE play_time SET duration = ? WHERE date_time = ?", (float(
-                parts[1]), parts[0]))
-            for d in parts[2].split(','):
-                cursor.execute(
-                    "DELETE FROM play_time WHERE date_time = ?", (d,))
+            primary_dt = parts[0]
+            primary_id = int(parts[3]) if len(parts) > 3 and parts[3] else None
+            doomed_ids = parts[4].split(',') if len(parts) > 4 and parts[4] else []
+
+            def _rowid_for(dt, sid):
+                if sid:
+                    return int(sid)
+                row = cursor.execute(
+                    "SELECT rowid FROM play_time WHERE date_time = ? ORDER BY rowid LIMIT 1",
+                    (dt,)).fetchone()
+                return row['rowid'] if row else None
+
+            primary_id = _rowid_for(primary_dt, primary_id)
+            if primary_id is not None:
+                cursor.execute("UPDATE play_time SET duration = ? WHERE rowid = ?",
+                               (float(parts[1]), primary_id))
+            else:
+                cursor.execute("UPDATE play_time SET duration = ? WHERE date_time = ?",
+                               (float(parts[1]), primary_dt))
+
+            doomed = [d for d in parts[2].split(',') if d]
+            for idx, d in enumerate(doomed):
+                sid = doomed_ids[idx] if idx < len(doomed_ids) else None
+                doomed_id = _rowid_for(d, sid)
+                if doomed_id is not None:
+                    cursor.execute("DELETE FROM play_time WHERE rowid = ?", (doomed_id,))
+                else:
+                    cursor.execute("DELETE FROM play_time WHERE date_time = ?", (d,))
         self._sync_overall_time(cursor)
         conn.commit()
         conn.close()
