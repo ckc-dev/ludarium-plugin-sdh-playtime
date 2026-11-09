@@ -1,7 +1,7 @@
 
 import sqlite3
 
-from database import AdapterOperationError, GameTrackerAdapter
+from plugin_sdk import AdapterOperationError, GameTrackerAdapter
 
 
 class SDHPlaytimeAdapter(GameTrackerAdapter):
