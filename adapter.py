@@ -31,6 +31,10 @@ class SDHPlaytimeAdapter(GameTrackerAdapter):
     # session_id instead of adding a column: rewriting the table would collide
     # with the owning Steam Playtime app, which tracks its own migrations.
     supports_session_ids = True
+    supports_session_write = True
+    supports_game_write = True
+    supports_game_merge = True
+    supports_raw_transfer = True
 
     def _get_conn(self):
         conn = sqlite3.connect(self.db_path)
