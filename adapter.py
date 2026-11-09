@@ -180,24 +180,27 @@ class SDHPlaytimeAdapter(GameTrackerAdapter):
         conn.close()
         return [{'session_id': r['session_id'], 'date_time': r['date_time'], 'name': r['name'], 'old_duration': r['duration'], 'new_duration': round(r['duration'])} for r in raw]
 
-    def apply_rounding(self, dates_list):
+    def apply_rounding(self, sessions):
         conn = self._get_conn()
         cursor = conn.cursor()
-        for dt in dates_list:
-            if isinstance(dt, (tuple, list)):
-                dt, session_id = dt
-            else:
-                session_id = None
+        missing = []
+        for ref in sessions:
+            session_id = ref.session_id
             if session_id is None:
                 row = cursor.execute(
-                    "SELECT rowid FROM play_time WHERE date_time = ? ORDER BY rowid LIMIT 1", (dt,)).fetchone()
+                    "SELECT rowid FROM play_time WHERE date_time = ? ORDER BY rowid LIMIT 1",
+                    (ref.date_time,)).fetchone()
                 session_id = row['rowid'] if row else None
             if session_id is not None:
                 cursor.execute(
-                    "UPDATE play_time SET duration = ROUND(duration) WHERE rowid = ?", (session_id,))
+                    "UPDATE play_time SET duration = ROUND(duration) WHERE rowid = ?",
+                    (session_id,))
             else:
-                cursor.execute(
-                    "UPDATE play_time SET duration = ROUND(duration) WHERE date_time = ?", (dt,))
+                missing.append(ref.date_time)
+        if missing:
+            conn.close()
+            raise AdapterOperationError(
+                "No session found for: " + ", ".join(missing))
         self._sync_overall_time(cursor)
         conn.commit()
         conn.close()
@@ -211,22 +214,26 @@ class SDHPlaytimeAdapter(GameTrackerAdapter):
         conn.close()
         return [{'session_id': r['session_id'], 'date_time': r['date_time'], 'duration': r['duration'], 'name': r['name']} for r in raw]
 
-    def apply_cleanup(self, dates_list):
+    def apply_cleanup(self, sessions):
         conn = self._get_conn()
         cursor = conn.cursor()
-        for dt in dates_list:
-            if isinstance(dt, (tuple, list)):
-                dt, session_id = dt
-            else:
-                session_id = None
+        missing = []
+        for ref in sessions:
+            session_id = ref.session_id
             if session_id is None:
                 row = cursor.execute(
-                    "SELECT rowid FROM play_time WHERE date_time = ? ORDER BY rowid LIMIT 1", (dt,)).fetchone()
+                    "SELECT rowid FROM play_time WHERE date_time = ? ORDER BY rowid LIMIT 1",
+                    (ref.date_time,)).fetchone()
                 session_id = row['rowid'] if row else None
             if session_id is not None:
-                cursor.execute("DELETE FROM play_time WHERE rowid = ?", (session_id,))
+                cursor.execute(
+                    "DELETE FROM play_time WHERE rowid = ?", (session_id,))
             else:
-                cursor.execute("DELETE FROM play_time WHERE date_time = ?", (dt,))
+                missing.append(ref.date_time)
+        if missing:
+            conn.close()
+            raise AdapterOperationError(
+                "No session found for: " + ", ".join(missing))
         self._sync_overall_time(cursor)
         conn.commit()
         conn.close()
@@ -240,42 +247,40 @@ class SDHPlaytimeAdapter(GameTrackerAdapter):
         conn.close()
         return raw
 
-    def apply_merges(self, merges_list):
+    def apply_merges(self, merges):
         conn = self._get_conn()
         cursor = conn.cursor()
-        for p in merges_list:
-            # Payload fields: primary_date_time|new_duration|doomed_csv[|primary_id][|doomed_ids_csv]
-            # The trailing id fields are optional, so a payload built by an
-            # older host still parses and falls back to date_time matching.
-            parts = p.split('|')
-            primary_dt = parts[0]
-            primary_id = int(parts[3]) if len(parts) > 3 and parts[3] else None
-            doomed_ids = parts[4].split(',') if len(parts) > 4 and parts[4] else []
 
-            def _rowid_for(dt, sid):
-                if sid:
-                    return int(sid)
-                row = cursor.execute(
-                    "SELECT rowid FROM play_time WHERE date_time = ? ORDER BY rowid LIMIT 1",
-                    (dt,)).fetchone()
-                return row['rowid'] if row else None
+        def _rowid_for(ref):
+            if ref.session_id is not None:
+                return int(ref.session_id)
+            row = cursor.execute(
+                "SELECT rowid FROM play_time WHERE date_time = ? "
+                "ORDER BY rowid LIMIT 1", (ref.date_time,)).fetchone()
+            return row['rowid'] if row else None
 
-            primary_id = _rowid_for(primary_dt, primary_id)
+        missing = []
+        for merge in merges:
+            primary_id = _rowid_for(merge.primary)
             if primary_id is not None:
-                cursor.execute("UPDATE play_time SET duration = ? WHERE rowid = ?",
-                               (float(parts[1]), primary_id))
+                cursor.execute(
+                    "UPDATE play_time SET duration = ? WHERE rowid = ?",
+                    (float(merge.duration), primary_id))
             else:
-                cursor.execute("UPDATE play_time SET duration = ? WHERE date_time = ?",
-                               (float(parts[1]), primary_dt))
+                missing.append(merge.primary.date_time)
 
-            doomed = [d for d in parts[2].split(',') if d]
-            for idx, d in enumerate(doomed):
-                sid = doomed_ids[idx] if idx < len(doomed_ids) else None
-                doomed_id = _rowid_for(d, sid)
+            for ref in merge.absorbed:
+                doomed_id = _rowid_for(ref)
                 if doomed_id is not None:
-                    cursor.execute("DELETE FROM play_time WHERE rowid = ?", (doomed_id,))
+                    cursor.execute(
+                        "DELETE FROM play_time WHERE rowid = ?", (doomed_id,))
                 else:
-                    cursor.execute("DELETE FROM play_time WHERE date_time = ?", (d,))
+                    missing.append(ref.date_time)
+
+        if missing:
+            conn.close()
+            raise AdapterOperationError(
+                "No session found for: " + ", ".join(missing))
         self._sync_overall_time(cursor)
         conn.commit()
         conn.close()
