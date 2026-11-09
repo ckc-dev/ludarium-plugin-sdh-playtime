@@ -1,21 +1,7 @@
 
 import sqlite3
-from datetime import datetime, timedelta
 
-from database import AdapterOperationError, GameTrackerAdapter, _attach_icon
-
-
-def _parse_dt(value):
-    """Tolerant timestamp parse.
-
-    Steam Playtime writes microseconds, but imported rows and host-padded
-    values can arrive as a bare '%Y-%m-%dT%H:%M:%S'. The previous inline
-    strptime assumed the microsecond form and its exact 'T' separator.
-    """
-    from database import parse_session_datetime
-    parsed = parse_session_datetime(value)
-    return parsed if parsed is not None else datetime.strptime(
-        value.split('.')[0], "%Y-%m-%dT%H:%M:%S")
+from database import AdapterOperationError, GameTrackerAdapter
 
 
 class SDHPlaytimeAdapter(GameTrackerAdapter):
@@ -89,17 +75,10 @@ class SDHPlaytimeAdapter(GameTrackerAdapter):
         """).fetchall()
         conn.close()
 
-        games_list = [dict(r, icon_url=_attach_icon(r['game_id']))
-                      for r in games_raw]
-        sessions = []
-        for r in sessions_raw:
-            s = dict(r, icon_url=_attach_icon(r['game_id']))
-            start_dt = _parse_dt(str(s['date_time']))
-            s['start_dt'], s['end_dt'], s['has_overlap'] = start_dt, start_dt + \
-                timedelta(seconds=float(s['duration'])), False
-            sessions.append(s)
-
-        return games_list, sessions, sum(r['actual_duration'] for r in games_list)
+        games_list = [dict(r) for r in games_raw]
+        sessions = [dict(r) for r in sessions_raw]
+        return games_list, sessions, sum(
+            r['actual_duration'] for r in games_list)
 
     def get_all_games(self):
         conn = self._get_conn()
@@ -199,7 +178,7 @@ class SDHPlaytimeAdapter(GameTrackerAdapter):
             JOIN game_dict g ON p.game_id = g.game_id WHERE p.duration != ROUND(p.duration) ORDER BY p.date_time DESC
         """).fetchall()
         conn.close()
-        return [{'session_id': r['session_id'], 'date_time': r['date_time'], 'name': r['name'], 'old_duration': r['duration'], 'new_duration': round(r['duration']), 'icon_url': _attach_icon(r['game_id'])} for r in raw]
+        return [{'session_id': r['session_id'], 'date_time': r['date_time'], 'name': r['name'], 'old_duration': r['duration'], 'new_duration': round(r['duration'])} for r in raw]
 
     def apply_rounding(self, dates_list):
         conn = self._get_conn()
@@ -230,7 +209,7 @@ class SDHPlaytimeAdapter(GameTrackerAdapter):
             JOIN game_dict g ON p.game_id = g.game_id WHERE p.duration < ? ORDER BY p.date_time DESC
         """, (threshold_seconds,)).fetchall()
         conn.close()
-        return [{'session_id': r['session_id'], 'date_time': r['date_time'], 'duration': r['duration'], 'name': r['name'], 'icon_url': _attach_icon(r['game_id'])} for r in raw]
+        return [{'session_id': r['session_id'], 'date_time': r['date_time'], 'duration': r['duration'], 'name': r['name']} for r in raw]
 
     def apply_cleanup(self, dates_list):
         conn = self._get_conn()
@@ -322,7 +301,6 @@ class SDHPlaytimeAdapter(GameTrackerAdapter):
             candidates.append({
                 'name': name,
                 'instances': inst_list,
-                'icon_url': _attach_icon(inst_list[0]['game_id'])
             })
         conn.close()
         return candidates
