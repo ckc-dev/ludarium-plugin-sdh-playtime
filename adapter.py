@@ -2,7 +2,7 @@
 import sqlite3
 from datetime import datetime, timedelta
 
-from database import GameTrackerAdapter, _attach_icon
+from database import AdapterOperationError, GameTrackerAdapter, _attach_icon
 
 
 def _parse_dt(value):
@@ -143,6 +143,10 @@ class SDHPlaytimeAdapter(GameTrackerAdapter):
         else:
             cursor.execute("UPDATE play_time SET game_id = ?, duration = ?, date_time = ? WHERE date_time = ?",
                            (game_id, duration, new_start, old_start))
+        if cursor.rowcount == 0:
+            conn.close()
+            raise AdapterOperationError(
+                f"No session starts at {old_start!r} in '{self.display_name}'.")
         self._sync_overall_time(cursor)
         conn.commit()
         conn.close()
@@ -172,6 +176,11 @@ class SDHPlaytimeAdapter(GameTrackerAdapter):
         else:
             cursor.execute("DELETE FROM play_time WHERE date_time = ?",
                            (original_date_time,))
+        if cursor.rowcount == 0:
+            conn.close()
+            raise AdapterOperationError(
+                f"No session starts at {original_date_time!r} "
+                f"in '{self.display_name}'.")
         self._sync_overall_time(cursor)
         conn.commit()
         conn.close()
