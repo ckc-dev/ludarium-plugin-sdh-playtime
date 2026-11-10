@@ -13,3 +13,26 @@ From this plugin repository, with the Ludarium checkout on `PYTHONPATH`:
 ```bash
 PYTHONPATH=/path/to/host python -m unittest discover -s tests -q
 ```
+
+## Acknowledgements
+
+This plugin is designed to interoperate with
+[SDH-PlayTime](https://github.com/ma3a/SDH-PlayTime) by ma3a, which is
+distributed under the BSD 3-Clause License. The upstream project supplied the
+database format this adapter reads and writes; its copyright and license are
+preserved in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
+Steam Deck is a trademark of Valve Corporation. This project is not affiliated
+with or endorsed by Valve.
+
+## License
+
+This plugin is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, version 3 only.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See [`LICENSE`](LICENSE) for the full terms.
+
+Copyright (C) 2026 Ludarium contributors.
