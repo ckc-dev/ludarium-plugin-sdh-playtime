@@ -11,5 +11,5 @@ playtime tools.
 From this plugin repository, with the Ludarium checkout on `PYTHONPATH`:
 
 ```bash
-PYTHONPATH=/path/to/ludarium python -m unittest discover -s tests -q
+PYTHONPATH=/path/to/host python -m unittest discover -s tests -q
 ```
