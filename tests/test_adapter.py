@@ -5,7 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from plugin_sdk import SessionRef
+from plugin_sdk import AdapterOperationError, SessionRef
 from plugins.sdh_playtime.adapter import SDHPlaytimeAdapter
 
 
@@ -124,3 +124,64 @@ class TestSdhWriteMatrix(unittest.TestCase):
             self.assertFalse(os.path.exists(path))
             self.assertTrue(any(name.startswith('playtime.db.backup_')
                                 for name in os.listdir(tmpdir)))
+
+
+class TestSdhErrorAndFallbackPaths(unittest.TestCase):
+    def test_missing_sessions_raise_for_every_mutation_path(self):
+        from plugin_sdk import SessionMerge, SessionRef
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, 'playtime.db')
+            _sdh_fixture(path)
+            adapter = SDHPlaytimeAdapter('sdh', 'SDH', path, 1)
+            with self.assertRaises(AdapterOperationError):
+                adapter.update_session(
+                    '100', 10, '2026-02-01T10:00:00',
+                    '2026-01-01T00:00:00')
+            with self.assertRaises(AdapterOperationError):
+                adapter.delete_session('2026-01-01T00:00:00')
+            with self.assertRaises(AdapterOperationError):
+                adapter.apply_rounding([
+                    SessionRef('sdh', '2026-01-01T00:00:00', None)])
+            with self.assertRaises(AdapterOperationError):
+                adapter.apply_cleanup([
+                    SessionRef('sdh', '2026-01-01T00:00:00', None)])
+            with self.assertRaises(AdapterOperationError):
+                adapter.apply_merges([
+                    SessionMerge(
+                        SessionRef('sdh', '2026-01-01T00:00:00', None),
+                        (), 10)])
+
+    def test_session_id_fallback_and_part_noops(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, 'playtime.db')
+            _sdh_fixture(path)
+            adapter = SDHPlaytimeAdapter('sdh', 'SDH', path, 1)
+            self.assertIsNotNone(
+                adapter._session_id('2026-01-01T10:00:00'))
+            adapter.update_session(
+                '100', 60, '2026-01-01T11:00:00',
+                '2026-01-01T10:00:00')
+            adapter.delete_session('2026-01-01T11:00:00')
+            self.assertEqual(adapter.get_session_parts('100', 'x'), [])
+            self.assertIsNone(adapter.update_session_part('x', 1, 'x', 'y'))
+            self.assertIsNone(adapter.add_session_part('100', 'x', 1))
+            self.assertIsNone(adapter.delete_session_part('x'))
+
+    def test_raw_import_recalculate_and_candidate_reads(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, 'playtime.db')
+            _sdh_fixture(path)
+            adapter = SDHPlaytimeAdapter('sdh', 'SDH', path, 1)
+            adapter.import_raw_data(
+                [{'game_id': '300', 'name': 'Imported'}],
+                [{'game_id': '300', 'date_time': '2026-01-05T10:00:00',
+                  'duration': 90.4}])
+            adapter.recalculate_totals()
+            chronological = adapter.get_sessions_chronological()
+            self.assertTrue(any(
+                row['game_id'] == '300' for row in chronological))
+            self.assertTrue(adapter.get_round_candidates())
+            self.assertTrue(adapter.get_cleanup_candidates(100))
+            self.assertEqual(
+                adapter.get_game_merge_candidates(), [])
+            adapter.apply_game_merges('100', [])
