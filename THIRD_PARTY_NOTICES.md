@@ -2,9 +2,11 @@
 
 ## SDH-PlayTime
 
-This plugin interoperates with
-[SDH-PlayTime](https://github.com/ma3a/SDH-PlayTime), Copyright (c) 2022 ma3a,
-with original copyright (c) 2022 Steam Deck Homebrew.
+This plugin interoperates with the maintained
+[SDH-PlayTime fork](https://github.com/0u73r-h34v3n/SDH-PlayTime) by
+0u73r-h34v3n, based on the archived
+[ma3a/SDH-PlayTime](https://github.com/ma3a/SDH-PlayTime). Copyright (c) 2022
+ma3a; original copyright (c) 2022 Steam Deck Homebrew.
 
 The upstream project is distributed under the BSD 3-Clause License:
 
